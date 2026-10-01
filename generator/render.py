@@ -1,4 +1,4 @@
-"""Render a Kindle Paperwhite 4 dashboard PNG (1072x1448, 8-bit grayscale).
+"""Render Kindle dashboard PNGs (8-bit grayscale) for common Kindle resolutions.
 
 Data sources (no API keys needed):
   - Weather: Open-Meteo
@@ -17,7 +17,8 @@ from zoneinfo import ZoneInfo
 from PIL import Image, ImageDraw, ImageFont
 
 # ---------- config ----------
-W, H = 1072, 1448
+W, H = 1080, 1440  # design canvas (3:4); scaled to each Kindle size on save
+SIZES = [(600, 800), (758, 1024), (1072, 1448)]
 TZ = ZoneInfo("Europe/Istanbul")
 CITY_NAME = os.getenv("DASH_CITY", "Gebze")
 LAT = float(os.getenv("DASH_LAT", "40.802"))
@@ -314,8 +315,14 @@ def render(data, out_path):
         d.text(((W - text_w(d, ln, F["quote"])) / 2, qy), ln, font=F["quote"], fill=BLACK)
         qy += lh
 
+    # Default file + one per known Kindle resolution (dashboard_600x800.png ...)
+    base = out_path[:-4] if out_path.endswith(".png") else out_path
     img.save(out_path, optimize=True)
     print(f"saved {out_path}")
+    for sw, sh in SIZES:
+        p = f"{base}_{sw}x{sh}.png"
+        img.resize((sw, sh), Image.LANCZOS).save(p, optimize=True)
+        print(f"saved {p}")
 
 
 def main():
