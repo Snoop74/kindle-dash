@@ -1,0 +1,12 @@
+{
+  "items": [
+    {
+      "name": "Kindle Dash",
+      "priority": 0,
+      "items": [
+        {"name": "1) Test (bir kez indir, goster)", "priority": 1, "action": "/bin/sh", "params": "/mnt/us/extensions/kindle-dash/dash.sh test"},
+        {"name": "2) Dashboard'u baslat (06:00/17:00)", "priority": 2, "action": "/bin/sh", "params": "/mnt/us/extensions/kindle-dash/dash.sh start", "exitmenu": true}
+      ]
+    }
+  ]
+}
