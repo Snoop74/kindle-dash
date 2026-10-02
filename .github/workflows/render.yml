@@ -3,8 +3,8 @@ name: Render dashboard
 on:
   schedule:
     # Istanbul is UTC+3. Render ~30 min before Kindle wakes (06:00 / 17:00).
-    - cron: "30 2 * * *"
-    - cron: "30 13 * * *"
+    - cron: "13 * * * *"
+    
   workflow_dispatch:
 
 permissions:
