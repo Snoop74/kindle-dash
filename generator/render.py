@@ -75,7 +75,7 @@ def fetch_weather():
     url = ("https://api.open-meteo.com/v1/forecast"
            f"?latitude={LAT}&longitude={LON}"
            "&current=temperature_2m,weather_code,relative_humidity_2m,wind_speed_10m"
-           "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
+           "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset,daylight_duration"
            "&timezone=Europe%2FIstanbul&forecast_days=4")
     d = get_json(url)
     days = []
@@ -86,6 +86,9 @@ def fetch_weather():
             "tmax": d["daily"]["temperature_2m_max"][i],
             "tmin": d["daily"]["temperature_2m_min"][i],
             "rain": d["daily"]["precipitation_probability_max"][i],
+            "sunrise": d["daily"]["sunrise"][i][-5:],
+            "sunset": d["daily"]["sunset"][i][-5:],
+            "daylight": d["daily"]["daylight_duration"][i],
         })
     c = d["current"]
     return {"temp": c["temperature_2m"], "code": c["weather_code"],
@@ -146,7 +149,8 @@ def fetch_fx():
 def mock_data():
     today = dt.date.today()
     days = [{"date": (today + dt.timedelta(days=i)).isoformat(), "code": c, "tmax": mx,
-             "tmin": mn, "rain": r} for i, (c, mx, mn, r) in
+             "tmin": mn, "rain": r, "sunrise": "07:05", "sunset": "18:47",
+             "daylight": 42120} for i, (c, mx, mn, r) in
             enumerate([(2, 22, 14, 10), (61, 19, 13, 70), (3, 18, 12, 30), (0, 21, 11, 0)])]
     return {
         "weather": {"temp": 17.4, "code": 2, "humidity": 68, "wind": 12.0, "days": days},
@@ -276,8 +280,7 @@ def change_str(ch):
 
 
 # ---------- render ----------
-def render(data, out_path):
-    now = dt.datetime.now(TZ)
+def draw_modern(data, now):
     img = Image.new("L", (W, H), WHITE)
     d = ImageDraw.Draw(img)
     M = 64  # side margin
@@ -384,6 +387,19 @@ def render(data, out_path):
         a = f"— {author}"
         d.text(((W - text_w(d, a, af)) / 2, qy + size * 0.35), a, font=af, fill=MID)
 
+    return img
+
+
+def render(data, out_path):
+    now = dt.datetime.now(TZ)
+    if os.getenv("DASH_NOW"):  # testing: DASH_NOW=2026-10-15T06:00
+        now = dt.datetime.fromisoformat(os.getenv("DASH_NOW")).replace(tzinfo=TZ)
+    theme = os.getenv("DASH_THEME", "takvim")
+    if theme == "takvim":
+        from takvim import draw_takvim
+        img = draw_takvim(data, now)
+    else:
+        img = draw_modern(data, now)
     # Default file + one per known Kindle resolution (dashboard_600x800.png ...)
     base = out_path[:-4] if out_path.endswith(".png") else out_path
     img.save(out_path, optimize=True)
