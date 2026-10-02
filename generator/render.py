@@ -92,10 +92,20 @@ def fetch_weather():
             "humidity": c["relative_humidity_2m"], "wind": c["wind_speed_10m"], "days": days}
 
 
+HISTORY_DAYS = 14
+
+
 def fetch_btc():
     d = get_json("https://api.coingecko.com/api/v3/simple/price"
                  "?ids=bitcoin&vs_currencies=usd&include_24hr_change=true")
-    return {"price": d["bitcoin"]["usd"], "change": d["bitcoin"]["usd_24h_change"]}
+    out = {"price": d["bitcoin"]["usd"], "change": d["bitcoin"]["usd_24h_change"]}
+    try:  # 14-day history for sparkline (hourly points), optional
+        h = get_json("https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
+                     f"?vs_currency=usd&days={HISTORY_DAYS}")
+        out["history"] = [p[1] for p in h["prices"]]
+    except Exception as e:
+        print(f"[warn] btc history: {e}", file=sys.stderr)
+    return out
 
 
 def _tcmb_rates(url):
@@ -116,15 +126,20 @@ def fetch_fx():
     # TCMB indicative rates (Döviz Satış). today.xml = latest published bulletin.
     last_date, last = _tcmb_rates("https://www.tcmb.gov.tr/kurlar/today.xml")
     ref = dt.datetime.strptime(last_date, "%d.%m.%Y").date()
-    prev = None
-    for back in range(1, 8):  # previous business day (skips weekends/holidays)
+    series = [last]  # newest first
+    for back in range(1, HISTORY_DAYS + 1):
         day = ref - dt.timedelta(days=back)
-        try:
-            _, prev = _tcmb_rates(f"https://www.tcmb.gov.tr/kurlar/{day:%Y%m}/{day:%d%m%Y}.xml")
-            break
-        except Exception:
+        if day.weekday() >= 5:  # no bulletin on weekends
             continue
-    return {k: {"rate": v, "change": (v / prev[k] - 1) * 100 if prev else 0.0}
+        try:
+            _, rates = _tcmb_rates(f"https://www.tcmb.gov.tr/kurlar/{day:%Y%m}/{day:%d%m%Y}.xml")
+            series.append(rates)
+        except Exception:
+            continue  # holiday or missing file
+    prev = series[1] if len(series) > 1 else None
+    return {k: {"rate": v,
+                "change": (v / prev[k] - 1) * 100 if prev else 0.0,
+                "history": [r[k] for r in reversed(series) if k in r]}
             for k, v in last.items()}
 
 
@@ -135,9 +150,26 @@ def mock_data():
             enumerate([(2, 22, 14, 10), (61, 19, 13, 70), (3, 18, 12, 30), (0, 21, 11, 0)])]
     return {
         "weather": {"temp": 17.4, "code": 2, "humidity": 68, "wind": 12.0, "days": days},
-        "btc": {"price": 112345.0, "change": -1.84},
-        "fx": {"USD": {"rate": 41.52, "change": 0.12}, "EUR": {"rate": 48.71, "change": -0.21}},
+        "btc": {"price": 112345.0, "change": -1.84,
+                "history": [108e3 + 4e3 * __import__("math").sin(i / 9) + i * 25 for i in range(336)]},
+        "fx": {"USD": {"rate": 41.52, "change": 0.12,
+                       "history": [41.1, 41.15, 41.2, 41.22, 41.3, 41.33, 41.4, 41.45, 41.47, 41.52]},
+               "EUR": {"rate": 48.71, "change": -0.21,
+                       "history": [48.2, 48.5, 48.4, 48.9, 48.95, 48.7, 48.8, 49.0, 48.81, 48.71]}},
     }
+
+
+def pick_quote(now, forced=None):
+    """Same quote all day; a fixed shuffle mixes the categories."""
+    import random
+    quotes = json.load(open(os.path.join(HERE, "quotes.json"), encoding="utf-8"))
+    quotes = [{"text": q} if isinstance(q, str) else q for q in quotes]
+    order = list(range(len(quotes)))
+    random.Random(42).shuffle(order)
+    if forced is not None:
+        return quotes[int(forced) % len(quotes)]
+    day = now.date().toordinal()
+    return quotes[order[day % len(order)]]
 
 
 def safe(fn):
@@ -200,6 +232,23 @@ def draw_icon(d, kind, cx, cy, r):
                     d.polygon([(x, y), (x - r * 0.2, y + r * 0.25), (x, y + r * 0.25),
                                (x - r * 0.15, y + r * 0.55), (x + r * 0.2, y + r * 0.15),
                                (x, y + r * 0.15), (x + r * 0.12, y)], fill=BLACK)
+
+
+def draw_sparkline(d, values, box):
+    """Min-max scaled line chart with a light fill and an end dot."""
+    if not values or len(values) < 2:
+        return
+    x0, y0, x1, y1 = box
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1
+    n = len(values)
+    pts = [(x0 + (x1 - x0) * i / (n - 1), y1 - (y1 - y0) * (v - lo) / span)
+           for i, v in enumerate(values)]
+    d.polygon(pts + [(x1, y1), (x0, y1)], fill=235)
+    d.line([x0, y1, x1, y1], fill=LIGHT, width=2)
+    d.line(pts, fill=BLACK, width=4, joint="curve")
+    ex, ey = pts[-1]
+    d.ellipse([ex - 7, ey - 7, ex + 7, ey + 7], fill=BLACK)
 
 
 def wrap(d, s, f, max_w):
@@ -286,34 +335,54 @@ def render(data, out_path):
     y += 60
     rows = []
     if data.get("btc"):
-        rows.append(("BTC", f"${fmt_num(data['btc']['price'], 0)}", data["btc"]["change"]))
+        b = data["btc"]
+        rows.append(("BTC", f"${fmt_num(b['price'], 0)}", b["change"], b.get("history")))
     fx = data.get("fx") or {}
     for k in ("USD", "EUR"):
         if k in fx:
-            rows.append((f"{k}/TRY", f"₺{fmt_num(fx[k]['rate'])}", fx[k]["change"]))
+            rows.append((f"{k}/TRY", f"₺{fmt_num(fx[k]['rate'])}", fx[k]["change"],
+                         fx[k].get("history")))
     if not rows:
         d.text((M, y), "Piyasa verisi alınamadı", font=F["body"], fill=MID)
         y += 70
-    for name, price, ch in rows:
+    spark_x0 = M + 230 + max((text_w(d, r[1], F["price"]) for r in rows), default=0) + 40
+    spark_x1 = W - M - max((text_w(d, change_str(r[2]), F["body"]) for r in rows), default=0) - 40
+    for name, price, ch, hist in rows:
         d.text((M, y + 12), name, font=F["body_b"], fill=DARK)
         d.text((M + 230, y), price, font=F["price"], fill=BLACK)
+        if hist and spark_x1 - spark_x0 > 80:
+            draw_sparkline(d, hist, (spark_x0, y + 10, spark_x1, y + 62))
         cs = change_str(ch)
         d.text((W - M - text_w(d, cs, F["body"]), y + 12), cs, font=F["body"], fill=DARK)
         y += 84
+    if any(r[3] for r in rows):
+        lbl = f"Grafikler: son {HISTORY_DAYS} gün"
+        d.text((W - M - text_w(d, lbl, F["small"]), y - 4), lbl, font=F["small"], fill=MID)
+        y += 30
     y += 10
     d.line([M, y, W - M, y], fill=LIGHT, width=3)
 
-    # Quote (fills remaining space, vertically centered)
-    quotes = json.load(open(os.path.join(HERE, "quotes.json"), encoding="utf-8"))
-    q = quotes[now.timetuple().tm_yday % len(quotes)]
-    lines = wrap(d, f"“{q}”", F["quote"], W - 2 * M - 40)
-    lh = 64
-    block = len(lines) * lh
-    area_top, area_bot = y + 20, H - 60
+    # Quote of the day (fills remaining space, vertically centered)
+    q = pick_quote(now, os.getenv("DASH_QUOTE_INDEX"))
+    text, author = q["text"], q.get("author")
+    area_top, area_bot = y + 24, H - 50
+    max_w = W - 2 * M - 40
+    # Shrink font until the quote fits the remaining area
+    for size in (46, 42, 38, 34, 30):
+        qf = font("DejaVuSerif-Italic.ttf", size)
+        af = font("DejaVuSans.ttf", int(size * 0.74))
+        lines = wrap(d, f"“{text}”", qf, max_w)
+        lh = int(size * 1.38)
+        block = len(lines) * lh + (int(size * 1.2) if author else 0)
+        if block <= area_bot - area_top:
+            break
     qy = area_top + (area_bot - area_top - block) / 2
     for ln in lines:
-        d.text(((W - text_w(d, ln, F["quote"])) / 2, qy), ln, font=F["quote"], fill=BLACK)
+        d.text(((W - text_w(d, ln, qf)) / 2, qy), ln, font=qf, fill=BLACK)
         qy += lh
+    if author:
+        a = f"— {author}"
+        d.text(((W - text_w(d, a, af)) / 2, qy + size * 0.35), a, font=af, fill=MID)
 
     # Default file + one per known Kindle resolution (dashboard_600x800.png ...)
     base = out_path[:-4] if out_path.endswith(".png") else out_path
